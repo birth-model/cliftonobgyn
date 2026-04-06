@@ -159,22 +159,22 @@
   #messages-wrap::-webkit-scrollbar { width: 3px; }
   #messages-wrap::-webkit-scrollbar-thumb { background: #ccc; border-radius: 2px; }
 
-  .date-divider { text-align: center; margin: 8px 0; }
-  .date-divider span { background: rgba(255,255,255,0.85); color: var(--text-muted); font-size: 12px; padding: 3px 10px; border-radius: 8px; }
+  .date-divider { text-align: center; margin: 10px 0; }
+  .date-divider span { background: rgba(255,255,255,0.9); color: var(--text-muted); font-size: 13px; font-weight: 500; padding: 5px 14px; border-radius: 10px; }
 
   .msg-row { display: flex; margin-bottom: 1px; }
   .msg-row.out { justify-content: flex-end; }
   .msg-row.in  { justify-content: flex-start; }
   .msg-bubble {
-    max-width: 78%; padding: 7px 10px 5px; border-radius: 8px;
+    max-width: 82%; padding: 10px 13px 7px; border-radius: 10px;
     position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); word-wrap: break-word;
   }
   .msg-row.out .msg-bubble { background: var(--msg-out); border-top-right-radius: 2px; }
   .msg-row.in  .msg-bubble { background: var(--msg-in);  border-top-left-radius: 2px; }
-  .msg-sender { font-size: 12px; font-weight: 600; color: var(--green-light); margin-bottom: 2px; }
-  .msg-text { font-size: 15px; line-height: 1.4; color: var(--text); white-space: pre-wrap; }
-  .msg-meta { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 2px; }
-  .msg-time { font-size: 11px; color: var(--text-muted); }
+  .msg-sender { font-size: 13px; font-weight: 700; color: var(--green-light); margin-bottom: 3px; }
+  .msg-text { font-size: 17px; line-height: 1.5; color: var(--text); white-space: pre-wrap; }
+  .msg-meta { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 3px; }
+  .msg-time { font-size: 12px; color: var(--text-muted); }
   .msg-tick svg { width: 16px; height: 10px; }
   .reaction-tag {
     display: inline-flex; align-items: center; gap: 3px;
@@ -232,27 +232,27 @@
 
   /* ── COMPOSE ────────────────────────────── */
   .compose-bar {
-    background: var(--input-bg); padding: 8px 12px;
-    padding-bottom: max(8px, env(safe-area-inset-bottom));
-    display: flex; align-items: flex-end; gap: 8px;
+    background: var(--input-bg); padding: 10px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    display: flex; align-items: flex-end; gap: 10px;
     flex-shrink: 0; border-top: 1px solid var(--border);
   }
   .compose-input {
-    flex: 1; min-height: 42px; max-height: 120px;
-    padding: 10px 14px; border: none; border-radius: 22px;
-    background: #fff; font-size: 16px; outline: none; resize: none;
-    line-height: 1.4; color: var(--text); font-family: inherit;
+    flex: 1; min-height: 50px; max-height: 140px;
+    padding: 13px 16px; border: none; border-radius: 25px;
+    background: #fff; font-size: 17px; outline: none; resize: none;
+    line-height: 1.5; color: var(--text); font-family: inherit;
     -webkit-appearance: none;
   }
   .compose-input::placeholder { color: #aaa; }
   .send-btn {
-    width: 42px; height: 42px; border-radius: 50%;
+    width: 50px; height: 50px; border-radius: 50%;
     background: var(--green); border: none; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; -webkit-tap-highlight-color: transparent;
   }
   .send-btn:active { background: var(--green-light); transform: scale(0.95); }
-  .send-btn svg { width: 18px; height: 18px; fill: #fff; margin-left: 2px; }
+  .send-btn svg { width: 22px; height: 22px; fill: #fff; margin-left: 2px; }
 
   /* ── MODAL ──────────────────────────────── */
   .modal-overlay {
@@ -737,7 +737,7 @@
   function renderMessages(msgs) {
     const wrap=document.getElementById('messages-wrap');
     wrap.innerHTML='';
-    if (!msgs.length) { wrap.innerHTML='<div class="msg-loading" style="color:#aaa">No messages yet. Say hello!</div>'; return; }
+    if (!msgs.length) { wrap.innerHTML='<div style="text-align:center;padding:30px;color:#aaa;font-size:15px">No messages yet.<br>Be the first to post a case!</div>'; return; }
     let lastDate=null;
     msgs.forEach(msg=>{
       const dateStr=formatDate(msg.created_at);
@@ -747,7 +747,8 @@
       }
       wrap.appendChild(buildMsgEl(msg));
     });
-    wrap.scrollTop=wrap.scrollHeight;
+    // Scroll to bottom — newest cases visible immediately
+    requestAnimationFrame(()=>{ wrap.scrollTop=wrap.scrollHeight; });
   }
 
   function buildMsgEl(msg) {
