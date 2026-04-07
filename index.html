@@ -293,7 +293,9 @@
   .export-dl-btn:disabled { background: #aaa; }
 </style>
 </head>
+
 <body>
+
 
 <!-- LOGIN -->
 <div id="login-screen">
@@ -351,6 +353,9 @@
       <div class="chat-header-sub" id="chat-header-sub">loading...</div>
     </div>
     <div class="header-actions">
+      <button class="icon-btn" id="add-user-btn" title="Add User">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="4" stroke="#fff" stroke-width="2"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2" stroke="#fff" stroke-width="2" stroke-linecap="round"/><path d="M19 8v6M22 11h-6" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
       <button class="icon-btn" id="export-btn" title="Export PDF">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 16l-4-4h2.5V4h3v8H16l-4 4z" fill="#fff"/><path d="M4 18h16v2H4v-2z" fill="#fff"/></svg>
       </button>
@@ -372,604 +377,560 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 (function() {
-  // ── SUPABASE CONFIG ──────────────────────────────
-  // Replace these with your Supabase project URL and anon key
+
+  // ─────────────────────────────────────────────────
+  // REPLACE THESE TWO LINES WITH YOUR SUPABASE DETAILS
   const SUPABASE_URL  = 'https://djsmrbcvflxvvmrwweac.supabase.co';
   const SUPABASE_ANON = 'sb_publishable_mLkg3eZ_p4PmBoxAQ4Ls2g_N112xHSB';
+  // ─────────────────────────────────────────────────
+
+  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') {
+    document.getElementById('login-screen').innerHTML =
+      '<div style="padding:40px;max-width:360px;margin:auto;background:#fff;border-radius:16px;font-family:sans-serif">' +
+      '<h2 style="color:#075E54">Setup Required</h2>' +
+      '<p style="margin-top:12px;color:#555;line-height:1.6">Open this file in a text editor and replace<br>' +
+      '<code>YOUR_SUPABASE_URL</code> and<br>' +
+      '<code>YOUR_SUPABASE_ANON_KEY</code><br>' +
+      'with your credentials from Supabase Settings &rarr; API.</p></div>';
+    return;
+  }
+
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
-  let myUserId   = null;
-  let myName     = null;
-  let currentChannel = null;
-  let allChannels    = [];
-  let pollTimer      = null;
-  let lastMsgId      = 0;
+  // state
+  let myUserId = null, myName = null;
+  let currentChannel = null, pollTimer = null, lastMsgId = 0;
+  let oldestMsgId = null, loadingMore = false;
+  let USERS = [];
+  let pinUserId = '', pinBuffer = '', pinMode = 'enter', pinFirstEntry = '';
 
-  let APPROVED_USERS = []; // loaded from Supabase on startup
-
-  // ── HELPERS ──────────────────────────────────────
-  function av(name) { return (name||'?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
-  function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function formatTime(ts) {
-    const d = new Date(ts), now = new Date();
+  // helpers
+  const av  = n => (n||'?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const fmtTime = ts => {
+    const d=new Date(ts), now=new Date();
     if (d.toDateString()===now.toDateString()) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    const diff=(now-d)/86400000;
-    if (diff<7) return d.toLocaleDateString([],{weekday:'short'});
+    if ((now-d)/86400000<7) return d.toLocaleDateString([],{weekday:'short'});
     return d.toLocaleDateString([],{month:'numeric',day:'numeric'});
-  }
-  function formatDate(ts) {
+  };
+  const fmtDate = ts => {
     const d=new Date(ts), now=new Date();
     if (d.toDateString()===now.toDateString()) return 'Today';
     const y=new Date(now); y.setDate(now.getDate()-1);
     if (d.toDateString()===y.toDateString()) return 'Yesterday';
     return d.toLocaleDateString([],{month:'long',day:'numeric',year:'numeric'});
-  }
+  };
 
-  // ── PIN HELPERS (Supabase-backed) ───────────────
-  async function getStoredPin(userId) {
-    const { data } = await sb.from('user_pins').select('pin_hash').eq('user_id', userId).single();
-    return data?.pin_hash || null;
-  }
-  async function savePin(userId, pin) {
-    await sb.from('user_pins').upsert({ user_id: userId, pin_hash: pin }, { onConflict: 'user_id' });
-  }
-  async function clearPin(userId) {
-    await sb.from('user_pins').delete().eq('user_id', userId);
-  }
+  // ── PIN (Supabase) ────────────────────────────────
+  const getPin    = async uid => { const {data}=await sb.from('user_pins').select('pin_hash').eq('user_id',uid).single(); return data?.pin_hash||null; };
+  const savePin   = async (uid,pin) => sb.from('user_pins').upsert({user_id:uid,pin_hash:pin},{onConflict:'user_id'});
+  const deletePin = async uid => sb.from('user_pins').delete().eq('user_id',uid);
 
-  // ── SETUP CHECK ──────────────────────────────────
-  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') {
-    document.getElementById('login-screen').innerHTML = `
-      <div style="background:#fff;border-radius:16px;padding:32px;max-width:380px;margin:auto;box-shadow:0 2px 20px rgba(0,0,0,0.1)">
-        <h2 style="color:#075E54;margin-bottom:12px">Setup Required</h2>
-        <p style="color:#555;margin-bottom:16px;line-height:1.6">To finish migrating off Sendbird, you need a free Supabase account:</p>
-        <ol style="color:#333;line-height:2;padding-left:20px">
-          <li>Go to <a href="https://supabase.com" target="_blank" style="color:#075E54">supabase.com</a> → New Project</li>
-          <li>Copy your <strong>Project URL</strong> and <strong>anon key</strong> from Settings → API</li>
-          <li>Run the <strong>import.sql</strong> file in Supabase SQL Editor</li>
-          <li>Replace <code>YOUR_SUPABASE_URL</code> and <code>YOUR_SUPABASE_ANON_KEY</code> in this HTML file</li>
-        </ol>
-        <p style="color:#888;font-size:12px;margin-top:16px">This imports all 3,891 historical messages from your Sendbird export automatically.</p>
-      </div>`;
-    return;
-  }
-
-  // ── USER PICKER — loaded from Supabase ───────────
+  // ── USERS ─────────────────────────────────────────
   async function loadUserPicker() {
-    const list = document.getElementById('user-list');
-    const btn = document.getElementById('login-btn');
-    list.innerHTML = '<div style="text-align:center;padding:20px"><div class="spinner dark"></div></div>';
+    const list=document.getElementById('user-list');
+    const btn=document.getElementById('login-btn');
+    btn.disabled=true; btn.textContent='Select your name';
+    list.innerHTML='<div style="text-align:center;padding:20px"><div class="spinner dark"></div></div>';
     try {
-      const { data, error } = await sb.from('users').select('id, name').eq('active', true).order('name', {ascending: true});
+      const {data,error}=await sb.from('users').select('id,name').eq('active',true).order('name');
       if (error) throw error;
-      APPROVED_USERS = data || [];
-      if (!APPROVED_USERS.length) {
-        list.innerHTML = '<div style="text-align:center;padding:16px;color:#999;font-size:13px">No users found.<br>Add users in Supabase → users table.</div>';
-        return;
-      }
-      list.innerHTML = APPROVED_USERS.map(u => `
-        <div class="user-option" data-id="${u.id}" data-name="${escHtml(u.name)}">
-          <div class="user-avatar">${av(u.name)}</div>
-          <div class="user-details"><div class="user-name">${escHtml(u.name)}</div></div>
-          <div class="user-check"></div>
-        </div>`).join('');
-      list.querySelectorAll('.user-option').forEach(el => {
-        el.addEventListener('click', () => {
-          list.querySelectorAll('.user-option').forEach(o => o.classList.remove('selected'));
-          el.classList.add('selected');
-          document.getElementById('inp-userid').value = el.dataset.id;
-          btn.disabled = false;
-          btn.textContent = 'Sign in as ' + el.dataset.name;
-        });
-      });
+      USERS=data||[];
+      renderUserList();
     } catch(e) {
-      list.innerHTML = `<div style="text-align:center;padding:16px;color:#c62828;font-size:13px">Could not load users: ${escHtml(e.message)}</div>`;
+      list.innerHTML='<div style="text-align:center;padding:16px;color:#c62828;font-size:14px">Error loading users: '+esc(e.message)+'</div>';
     }
   }
-  loadUserPicker();
 
-  // ── PIN LOGIC ────────────────────────────────────
-  let pinBuffer = '', pinMode = 'enter', pinFirstEntry = '', pinUserId = '';
+  function renderUserList() {
+    const list=document.getElementById('user-list');
+    const btn=document.getElementById('login-btn');
+    list.innerHTML = USERS.map(u =>
+      '<div class="user-option" data-id="'+u.id+'" data-name="'+esc(u.name)+'">' +
+      '<div class="user-avatar">'+av(u.name)+'</div>' +
+      '<div class="user-details"><div class="user-name">'+esc(u.name)+'</div></div>' +
+      '<div class="user-check"></div></div>'
+    ).join('') +
+    '<div class="user-option add-user-row" id="add-user-row" style="border-style:dashed;justify-content:center;gap:10px;color:#667781">' +
+    '<span style="font-size:22px;line-height:1">+</span>' +
+    '<span style="font-size:15px;font-weight:500">Add a user</span></div>';
 
-  async function showPinScreen(userId, userName) {
-    pinUserId = userId; pinBuffer = ''; pinFirstEntry = '';
-    document.getElementById('pin-avatar').textContent = av(userName);
-    document.getElementById('pin-name').textContent = userName;
-    document.getElementById('pin-error').textContent = '';
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('pin-screen').style.display = 'flex';
-
-    // Check Supabase for existing PIN
-    document.getElementById('pin-prompt').innerHTML = 'Checking...<br><span style="font-size:11px;color:#aaa"></span>';
-    const stored = await getStoredPin(userId);
-    pinMode = stored ? 'enter' : 'create';
-    updatePinPrompt();
-    updatePinDots();
+    list.querySelectorAll('.user-option:not(.add-user-row)').forEach(el => {
+      el.addEventListener('click', () => {
+        list.querySelectorAll('.user-option').forEach(o=>o.classList.remove('selected'));
+        el.classList.add('selected');
+        document.getElementById('inp-userid').value=el.dataset.id;
+        btn.disabled=false;
+        btn.textContent='Sign in as '+el.dataset.name;
+      });
+    });
+    document.getElementById('add-user-row').addEventListener('click', showAddUserSheet);
   }
+
+  function showAddUserSheet() {
+    const ov=document.createElement('div');
+    ov.className='modal-overlay';
+    ov.innerHTML=
+      '<div class="modal-card">' +
+        '<div class="modal-header">' +
+          '<span class="modal-title">Add a new user</span>' +
+          '<button class="modal-close" id="au-close">&#215;</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+          '<div class="modal-label">Full name</div>' +
+          '<input id="au-name" type="text" placeholder="e.g. Jane Smith" autocomplete="off" ' +
+            'style="width:100%;height:52px;padding:0 16px;border:1.5px solid #e9edef;border-radius:12px;' +
+            'font-size:17px;margin-bottom:14px;outline:none;-webkit-appearance:none;" />' +
+          '<div class="modal-label">Role (optional)</div>' +
+          '<input id="au-role" type="text" placeholder="Physician" autocomplete="off" ' +
+            'style="width:100%;height:52px;padding:0 16px;border:1.5px solid #e9edef;border-radius:12px;' +
+            'font-size:17px;margin-bottom:18px;outline:none;-webkit-appearance:none;" />' +
+          '<button id="au-save" class="export-dl-btn" style="font-size:17px;height:52px;">Add User</button>' +
+          '<div id="au-err" style="color:#c62828;font-size:13px;margin-top:10px;text-align:center;display:none"></div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    document.getElementById('au-close').addEventListener('click',()=>ov.remove());
+    ov.addEventListener('click',e=>{if(e.target===ov)ov.remove();});
+    setTimeout(()=>document.getElementById('au-name').focus(), 100);
+
+    document.getElementById('au-save').addEventListener('click', async () => {
+      const name=document.getElementById('au-name').value.trim();
+      const role=document.getElementById('au-role').value.trim()||'Physician';
+      const errEl=document.getElementById('au-err');
+      if (!name) { errEl.textContent='Please enter a name.'; errEl.style.display='block'; return; }
+      const saveBtn=document.getElementById('au-save');
+      saveBtn.disabled=true; saveBtn.textContent='Saving...';
+      try {
+        const newId=String(Date.now()).slice(-8);
+        const {error}=await sb.from('users').insert({id:newId,name:name,role:role,active:true});
+        if (error) throw error;
+        ov.remove();
+        await loadUserPicker();
+      } catch(e) {
+        errEl.textContent='Error: '+e.message; errEl.style.display='block';
+        saveBtn.disabled=false; saveBtn.textContent='Add User';
+      }
+    });
+  }
+
+  // ── LOGIN ─────────────────────────────────────────
+  document.getElementById('login-btn').addEventListener('click', async () => {
+    const userId=document.getElementById('inp-userid').value.trim();
+    if (!userId) return;
+    const user=USERS.find(u=>u.id===userId);
+    if (!user) return;
+    document.getElementById('login-error').style.display='none';
+    await showPinScreen(userId, user.name);
+  });
+
+  // ── PIN SCREEN ────────────────────────────────────
+  async function showPinScreen(userId, userName) {
+    pinUserId=userId; pinBuffer=''; pinFirstEntry='';
+    document.getElementById('pin-avatar').textContent=av(userName);
+    document.getElementById('pin-name').textContent=userName;
+    document.getElementById('pin-error').textContent='';
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('pin-screen').style.display='flex';
+    document.getElementById('pin-prompt').innerHTML='<div class="spinner dark" style="margin:auto"></div>';
+    const stored=await getPin(userId);
+    pinMode=stored?'enter':'create';
+    updatePinPrompt(); updatePinDots();
+  }
+
   function updatePinPrompt() {
-    const el = document.getElementById('pin-prompt');
-    if (pinMode==='create') el.innerHTML='Create a 4-digit PIN<br><span style="font-size:11px;color:#aaa;font-weight:normal">Saved to this device — one time only</span>';
+    const el=document.getElementById('pin-prompt');
+    if (pinMode==='create') el.innerHTML='Create a 4-digit PIN<br><span style="font-size:12px;color:#aaa;font-weight:normal">Saved to your account — works on all devices</span>';
     if (pinMode==='confirm') el.textContent='Confirm your PIN';
     if (pinMode==='enter') el.textContent='Enter your PIN';
   }
   function updatePinDots() {
     for (let i=0;i<4;i++) {
       const d=document.getElementById('d'+i);
-      d.classList.toggle('filled', i<pinBuffer.length);
+      d.classList.toggle('filled',i<pinBuffer.length);
       d.classList.remove('error');
     }
   }
   function pinError(msg) {
-    document.getElementById('pin-error').textContent = msg;
+    document.getElementById('pin-error').textContent=msg;
     for (let i=0;i<4;i++) document.getElementById('d'+i).classList.add('error');
-    setTimeout(()=>{ pinBuffer=''; updatePinDots(); document.getElementById('pin-error').textContent=''; }, 600);
+    setTimeout(()=>{pinBuffer='';updatePinDots();document.getElementById('pin-error').textContent='';},700);
   }
+
   async function handlePinComplete() {
     if (pinMode==='create') {
       pinFirstEntry=pinBuffer; pinBuffer=''; pinMode='confirm'; updatePinPrompt(); updatePinDots();
     } else if (pinMode==='confirm') {
-      if (pinBuffer!==pinFirstEntry) {
-        pinError("PINs don't match. Try again."); pinMode='create'; pinFirstEntry=''; setTimeout(updatePinPrompt,650);
-      } else {
-        // Show saving indicator
-        document.getElementById('pin-prompt').textContent='Saving PIN...';
-        await savePin(pinUserId, pinBuffer);
-        await connectUser(pinUserId);
-      }
-    } else if (pinMode==='enter') {
-      // Check against Supabase
+      if (pinBuffer!==pinFirstEntry) { pinError("PINs don't match"); pinMode='create'; pinFirstEntry=''; setTimeout(updatePinPrompt,800); }
+      else { document.getElementById('pin-prompt').textContent='Saving...'; await savePin(pinUserId,pinBuffer); connect(pinUserId); }
+    } else {
       document.getElementById('pin-prompt').textContent='Checking...';
-      const stored = await getStoredPin(pinUserId);
-      if (pinBuffer === stored) {
-        await connectUser(pinUserId);
-      } else {
-        updatePinPrompt();
-        pinError('Incorrect PIN. Try again.');
-      }
+      const stored=await getPin(pinUserId);
+      if (pinBuffer===stored) connect(pinUserId);
+      else { updatePinPrompt(); pinError('Incorrect PIN'); }
     }
-  }
-  async function connectUser(userId) {
-    document.getElementById('pin-screen').style.display='none';
-    document.getElementById('app').style.display='flex';
-    myUserId=userId;
-    myName=APPROVED_USERS.find(u=>u.id===userId)?.name||userId;
-    // Go straight to the single channel
-    document.getElementById('chat-header-sub').textContent=myName;
-    await initChannel();
   }
 
-  async function initChannel() {
-    // Handle iOS keyboard resize
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', ()=>{
-        const app = document.getElementById('app');
-        app.style.height = window.visualViewport.height + 'px';
-        app.style.top = window.visualViewport.offsetTop + 'px';
-        // Keep scroll at bottom when keyboard opens
-        const wrap = document.getElementById('messages-wrap');
-        setTimeout(()=>{ wrap.scrollTop = wrap.scrollHeight; }, 50);
-      });
-    }
-    try {
-      const { data, error } = await sb.from('channels').select('*').eq('name','Clifton OBGYN Procedures').single();
-      if (error) throw error;
-      currentChannel = data;
-      pollTimer = setInterval(()=>pollNewMessages(data.id), 3000);
-      await loadMessages(data.id);
-    } catch(e) {
-      document.getElementById('messages-wrap').innerHTML=`<div style="padding:20px;color:#c62828;text-align:center">Could not load chat: ${escHtml(e.message)}</div>`;
-    }
-  }
   document.querySelectorAll('.pin-key').forEach(btn => {
-    btn.addEventListener('click', ()=>{
-      const val=btn.dataset.val;
-      if (val==='') return;
-      if (val==='del') { pinBuffer=pinBuffer.slice(0,-1); updatePinDots(); return; }
+    btn.addEventListener('click', () => {
+      const v=btn.dataset.val;
+      if (v==='') return;
+      if (v==='del') { pinBuffer=pinBuffer.slice(0,-1); updatePinDots(); return; }
       if (pinBuffer.length>=4) return;
-      pinBuffer+=val; updatePinDots();
+      pinBuffer+=v; updatePinDots();
       if (pinBuffer.length===4) setTimeout(handlePinComplete,120);
     });
   });
+
   document.getElementById('pin-back-btn').addEventListener('click',()=>{
     document.getElementById('pin-screen').style.display='none';
     document.getElementById('login-screen').style.display='flex';
     pinBuffer=''; pinFirstEntry='';
   });
 
-  document.getElementById('forgot-pin-btn').addEventListener('click', async ()=>{
-    if (!pinUserId) return;
-    const userName = APPROVED_USERS.find(u=>u.id===pinUserId)?.name || pinUserId;
-    if (confirm(`Reset PIN for ${userName}? They will set a new one on next login.`)) {
-      await clearPin(pinUserId);
+  document.getElementById('forgot-pin-btn').addEventListener('click',async()=>{
+    const name=USERS.find(u=>u.id===pinUserId)?.name||pinUserId;
+    if (confirm('Reset PIN for '+name+'? They will create a new one on next login.')) {
+      await deletePin(pinUserId);
       pinBuffer=''; pinFirstEntry=''; pinMode='create';
       document.getElementById('pin-error').textContent='';
       updatePinPrompt(); updatePinDots();
-      document.getElementById('pin-prompt').innerHTML='PIN reset!<br><span style="font-size:12px;color:#25D366">Create a new 4-digit PIN</span>';
     }
   });
 
-  // ── LOGIN ────────────────────────────────────────
-  document.getElementById('login-btn').addEventListener('click', doLogin);
-  async function doLogin() {
-    const userId = document.getElementById('inp-userid').value.trim();
-    if (!userId) { showLoginError('Please select your name.'); return; }
-    const user = APPROVED_USERS.find(u=>u.id===userId);
-    if (!user) { showLoginError('User not found.'); return; }
-    document.getElementById('login-error').style.display='none';
-    await showPinScreen(userId, user.name);
-  }
-  function showLoginError(msg) {
-    const el=document.getElementById('login-error'); el.textContent=msg; el.style.display='block';
-  }
+  // ── CONNECT ───────────────────────────────────────
+  async function connect(userId) {
+    document.getElementById('pin-screen').style.display='none';
+    document.getElementById('app').style.display='flex';
+    myUserId=userId;
+    myName=USERS.find(u=>u.id===userId)?.name||userId;
+    document.getElementById('chat-header-sub').textContent=myName;
 
-  // ── LOGOUT ───────────────────────────────────────
-  document.getElementById('logout-btn').addEventListener('click',()=>{ if(confirm('Sign out?')){ clearInterval(pollTimer); location.reload(); } });
-
-  // ── CHANNELS ─────────────────────────────────────
-  async function loadChannels() {
-    const list = document.getElementById('channel-list');
-    list.innerHTML = '<div class="channel-loading"><div class="spinner dark"></div></div>';
-    try {
-      const { data, error } = await sb.from('channels').select('*, messages(id, user_name, message, created_at, reaction)').order('created_at', { foreignTable: 'messages', ascending: false });
-      if (error) throw error;
-      // Build channel list with last message info
-      const chans = await Promise.all((data||[]).map(async ch => {
-        const { data: lastMsg } = await sb.from('messages').select('*').eq('channel_id', ch.id).order('created_at', {ascending:false}).limit(1);
-        return { ...ch, last_message: lastMsg?.[0] || null };
-      }));
-      allChannels = chans;
-      renderChannelList(allChannels);
-    } catch(e) {
-      list.innerHTML = `<div class="channel-empty">Could not load chats.<br><small>${escHtml(e.message)}</small></div>`;
-    }
-  }
-
-  function renderChannelList(channels) {
-    const list = document.getElementById('channel-list');
-    if (!channels.length) { list.innerHTML='<div class="channel-empty">No conversations yet.</div>'; return; }
-    list.innerHTML = channels.map(ch => {
-      const preview = ch.last_message?.message || 'No messages yet';
-      const time = ch.last_message ? formatTime(ch.last_message.created_at) : '';
-      const active = currentChannel?.id===ch.id ? ' active' : '';
-      return `<div class="channel-item${active}" data-id="${ch.id}">
-        <div class="channel-avatar">${av(ch.name)}</div>
-        <div class="channel-info">
-          <div class="channel-name">${escHtml(ch.name)}</div>
-          <div class="channel-preview">${escHtml(preview.split('\n')[0])}</div>
-        </div>
-        <div class="channel-meta"><div class="channel-time">${time}</div></div>
-      </div>`;
-    }).join('');
-    list.querySelectorAll('.channel-item').forEach(el=>{
-      el.addEventListener('click',()=>{
-        const ch=allChannels.find(c=>c.id===parseInt(el.dataset.id));
-        if (ch) openChannel(ch);
+    // iOS keyboard fix
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize',()=>{
+        const app=document.getElementById('app');
+        app.style.height=window.visualViewport.height+'px';
+        app.style.top=window.visualViewport.offsetTop+'px';
+        const wrap=document.getElementById('messages-wrap');
+        setTimeout(()=>{ wrap.scrollTop=wrap.scrollHeight; },50);
       });
-    });
+    }
+
+    try {
+      const {data,error}=await sb.from('channels').select('*').eq('name','Clifton OBGYN Procedures').single();
+      if (error) throw error;
+      currentChannel=data;
+      await loadMessages(data.id);
+      pollTimer=setInterval(()=>pollNew(data.id),3000);
+    } catch(e) {
+      document.getElementById('messages-wrap').innerHTML=
+        '<div style="padding:24px;color:#c62828;text-align:center;font-size:16px">Could not load chat.<br><small>'+esc(e.message)+'</small></div>';
+    }
   }
 
-  document.getElementById('search-input').addEventListener('input', e=>{
-    const q=e.target.value.toLowerCase();
-    renderChannelList(allChannels.filter(ch=>ch.name.toLowerCase().includes(q)||(ch.last_message?.message||'').toLowerCase().includes(q)));
-  });
-
-  // ── OPEN CHANNEL ─────────────────────────────────
-  async function openChannel(ch) {
-    clearInterval(pollTimer);
-    currentChannel=ch;
-    document.getElementById('app').classList.add('chat-open');
-    document.getElementById('chat-placeholder').style.display='none';
-    document.getElementById('active-chat').style.display='flex';
-    document.getElementById('chat-header-avatar').textContent=av(ch.name);
-    document.getElementById('chat-header-name').textContent=ch.name;
-    document.getElementById('chat-header-status').textContent='';
-    renderChannelList(allChannels);
-    await loadMessages(ch.id);
-    pollTimer = setInterval(()=>pollNewMessages(ch.id), 3000);
-  }
-
-  // ── LOAD MESSAGES ────────────────────────────────
-  let allLoadedMsgs = [];
-  let oldestMsgId = null;
-  let loadingMore = false;
-
+  // ── LOAD MESSAGES ─────────────────────────────────
   async function loadMessages(channelId) {
     const wrap=document.getElementById('messages-wrap');
-    wrap.innerHTML='<div class="msg-loading"><div class="spinner dark"></div></div>';
-    allLoadedMsgs = []; oldestMsgId = null;
+    wrap.innerHTML='<div style="text-align:center;padding:30px"><div class="spinner dark"></div></div>';
+    oldestMsgId=null;
     try {
-      // Load latest 100 messages first — fast
-      const { data, error } = await sb.from('messages').select('*').eq('channel_id', channelId).order('id', {ascending:false}).limit(100);
+      const {data,error}=await sb.from('messages').select('*').eq('channel_id',channelId).order('id',{ascending:false}).limit(100);
       if (error) throw error;
-      const msgs = (data||[]).reverse(); // oldest→newest order
-      allLoadedMsgs = msgs;
-      if (msgs.length) { lastMsgId = msgs[msgs.length-1].id; oldestMsgId = msgs[0].id; }
-      renderMessages(msgs);
-      // Add "load older" button at top if there might be more
-      if (msgs.length === 100) prependLoadOlderBtn(channelId);
+      const msgs=(data||[]).reverse();
+      if (msgs.length) { lastMsgId=msgs[msgs.length-1].id; oldestMsgId=msgs[0].id; }
+      renderMsgs(msgs);
+      if (msgs.length===100) addLoadOlderBtn(channelId);
     } catch(e) {
-      wrap.innerHTML=`<div class="msg-loading" style="color:#c62828">Failed to load: ${escHtml(e.message)}</div>`;
+      wrap.innerHTML='<div style="padding:24px;color:#c62828;text-align:center;font-size:16px">Failed to load.<br><small>'+esc(e.message)+'</small></div>';
     }
   }
 
-  function prependLoadOlderBtn(channelId) {
+  function addLoadOlderBtn(channelId) {
     const wrap=document.getElementById('messages-wrap');
     const btn=document.createElement('div');
-    btn.id='load-older-btn';
-    btn.style.cssText='text-align:center;padding:10px;cursor:pointer;font-size:12px;color:#075E54;font-weight:500;';
-    btn.textContent='⬆ Load older messages';
-    btn.addEventListener('click', ()=>loadOlderMessages(channelId));
-    wrap.insertBefore(btn, wrap.firstChild);
+    btn.id='load-older';
+    btn.style.cssText='text-align:center;padding:14px;cursor:pointer;font-size:14px;color:#075E54;font-weight:600;';
+    btn.textContent='\u2B06 Load older messages';
+    btn.addEventListener('click',()=>loadOlder(channelId));
+    wrap.insertBefore(btn,wrap.firstChild);
   }
 
-  async function loadOlderMessages(channelId) {
-    if (loadingMore || !oldestMsgId) return;
-    loadingMore = true;
-    const wrap=document.getElementById('messages-wrap');
-    const btn=document.getElementById('load-older-btn');
+  async function loadOlder(channelId) {
+    if (loadingMore||!oldestMsgId) return;
+    loadingMore=true;
+    const btn=document.getElementById('load-older');
     if (btn) btn.textContent='Loading...';
     try {
-      const { data, error } = await sb.from('messages').select('*').eq('channel_id', channelId).lt('id', oldestMsgId).order('id', {ascending:false}).limit(100);
-      if (error) throw error;
-      const older = (data||[]).reverse();
-      if (!older.length) { if(btn) btn.remove(); return; }
-      oldestMsgId = older[0].id;
-      const scrollBottom = wrap.scrollHeight - wrap.scrollTop;
-      // Prepend older messages
-      older.forEach(msg => {
-        const el = buildMsgEl(msg);
-        wrap.insertBefore(el, btn ? btn.nextSibling : wrap.firstChild);
-        // Add date dividers
+      const {data}=await sb.from('messages').select('*').eq('channel_id',channelId).lt('id',oldestMsgId).order('id',{ascending:false}).limit(100);
+      const older=(data||[]).reverse();
+      if (!older.length) { if(btn)btn.remove(); loadingMore=false; return; }
+      oldestMsgId=older[0].id;
+      const wrap=document.getElementById('messages-wrap');
+      const saved=wrap.scrollHeight-wrap.scrollTop;
+      const ref=btn?btn.nextSibling:wrap.firstChild;
+      let lastDate=null;
+      older.forEach(msg=>{
+        const ds=fmtDate(msg.created_at);
+        if (ds!==lastDate) { const d=document.createElement('div'); d.className='date-divider'; d.innerHTML='<span>'+esc(ds)+'</span>'; wrap.insertBefore(d,ref); lastDate=ds; }
+        wrap.insertBefore(buildMsg(msg),ref);
       });
-      wrap.scrollTop = wrap.scrollHeight - scrollBottom;
-      if (older.length < 100) { if(btn) btn.remove(); }
-      else if(btn) btn.textContent='⬆ Load older messages';
-    } catch(e) {}
-    loadingMore = false;
+      wrap.scrollTop=wrap.scrollHeight-saved;
+      if (older.length<100&&btn) btn.remove();
+      else if (btn) btn.textContent='\u2B06 Load older messages';
+    } catch(e){}
+    loadingMore=false;
   }
 
-  function renderMessages(msgs) {
+  function renderMsgs(msgs) {
     const wrap=document.getElementById('messages-wrap');
     wrap.innerHTML='';
-    if (!msgs.length) { wrap.innerHTML='<div style="text-align:center;padding:30px;color:#aaa;font-size:15px">No messages yet.<br>Be the first to post a case!</div>'; return; }
+    if (!msgs.length) { wrap.innerHTML='<div style="text-align:center;padding:40px;color:#aaa;font-size:16px">No messages yet.<br>Post the first case!</div>'; return; }
     let lastDate=null;
     msgs.forEach(msg=>{
-      const dateStr=formatDate(msg.created_at);
-      if (dateStr!==lastDate) {
-        const d=document.createElement('div'); d.className='date-divider';
-        d.innerHTML=`<span>${escHtml(dateStr)}</span>`; wrap.appendChild(d); lastDate=dateStr;
-      }
-      wrap.appendChild(buildMsgEl(msg));
+      const ds=fmtDate(msg.created_at);
+      if (ds!==lastDate) { const d=document.createElement('div'); d.className='date-divider'; d.innerHTML='<span>'+esc(ds)+'</span>'; wrap.appendChild(d); lastDate=ds; }
+      wrap.appendChild(buildMsg(msg));
     });
-    // Scroll to bottom — newest cases visible immediately
     requestAnimationFrame(()=>{ wrap.scrollTop=wrap.scrollHeight; });
   }
 
-  function buildMsgEl(msg) {
-    const isOut = msg.user_name === myName;
-    const row=document.createElement('div'); row.className=`msg-row ${isOut?'out':'in'}`; row.dataset.msgId=msg.id;
-    const reactionTag = msg.reaction ? `<div class="reaction-tag ${msg.reaction}">${msg.reaction==='submitted'?'✅ Submitted':'⏳ Pending'}</div>` : '';
-    row.innerHTML=`<div class="msg-bubble">
-      ${!isOut?`<div class="msg-sender">${escHtml(msg.user_name)}</div>`:''}
-      <div class="msg-text">${escHtml(msg.message)}</div>
-      ${reactionTag}
-      <div class="msg-meta">
-        <span class="msg-time">${formatTime(msg.created_at)}</span>
-        ${isOut?'<span class="msg-tick"><svg viewBox="0 0 16 10" fill="none"><path d="M1 5l3.5 3.5L13 1" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l3.5 3.5L17 1" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':''}
-      </div>
-    </div>`;
-    row.querySelector('.msg-bubble').addEventListener('click', e=>{ e.stopPropagation(); showReactionPopup(row, msg); });
+  function buildMsg(msg) {
+    const isOut=msg.user_name===myName;
+    const row=document.createElement('div');
+    row.className='msg-row '+(isOut?'out':'in');
+    row.dataset.msgId=msg.id;
+    const rxn=msg.reaction?'<div class="reaction-tag '+msg.reaction+'">'+(msg.reaction==='submitted'?'\u2705 Submitted':'\u23F3 Pending')+'</div>':'';
+    const sender=!isOut?'<div class="msg-sender">'+esc(msg.user_name)+'</div>':'';
+    const tick=isOut?'<span class="msg-tick"><svg viewBox="0 0 16 10" fill="none"><path d="M1 5l3.5 3.5L13 1" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l3.5 3.5L17 1" stroke="#53bdeb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':'';
+    row.innerHTML=
+      '<div class="msg-bubble">'+
+        sender+
+        '<div class="msg-text">'+esc(msg.message)+'</div>'+
+        rxn+
+        '<div class="msg-meta"><span class="msg-time">'+fmtTime(msg.created_at)+'</span>'+tick+'</div>'+
+      '</div>';
+    row.querySelector('.msg-bubble').addEventListener('click',e=>{e.stopPropagation();showReactionSheet(msg,row);});
     return row;
   }
 
-  // ── POLL NEW MESSAGES ────────────────────────────
-  async function pollNewMessages(channelId) {
+  // ── POLL ──────────────────────────────────────────
+  async function pollNew(channelId) {
     if (!currentChannel||currentChannel.id!==channelId) return;
     try {
-      const { data } = await sb.from('messages').select('*').eq('channel_id', channelId).gt('id', lastMsgId).order('id', {ascending:true});
+      const {data}=await sb.from('messages').select('*').eq('channel_id',channelId).gt('id',lastMsgId).order('id',{ascending:true});
       if (!data?.length) return;
       const wrap=document.getElementById('messages-wrap');
+      const atBottom=wrap.scrollHeight-wrap.scrollTop-wrap.clientHeight<100;
+      let lastDate=null;
+      const divs=wrap.querySelectorAll('.date-divider');
+      if (divs.length) lastDate=divs[divs.length-1].querySelector('span').textContent;
       data.forEach(msg=>{
-        lastMsgId=Math.max(lastMsgId, msg.id);
-        const dateStr=formatDate(msg.created_at);
-        const divs=wrap.querySelectorAll('.date-divider');
-        const last=divs[divs.length-1];
-        if (!last||last.querySelector('span').textContent!==dateStr) {
-          const d=document.createElement('div'); d.className='date-divider';
-          d.innerHTML=`<span>${escHtml(dateStr)}</span>`; wrap.appendChild(d);
-        }
-        wrap.appendChild(buildMsgEl(msg));
+        lastMsgId=Math.max(lastMsgId,msg.id);
+        const ds=fmtDate(msg.created_at);
+        if (ds!==lastDate) { const d=document.createElement('div'); d.className='date-divider'; d.innerHTML='<span>'+esc(ds)+'</span>'; wrap.appendChild(d); lastDate=ds; }
+        wrap.appendChild(buildMsg(msg));
       });
-      wrap.scrollTop=wrap.scrollHeight;
-      loadChannels();
+      if (atBottom) wrap.scrollTop=wrap.scrollHeight;
     } catch(e){}
   }
 
-  // ── SEND MESSAGE ─────────────────────────────────
+  // ── SEND ──────────────────────────────────────────
   const composeEl=document.getElementById('compose-input');
-  document.getElementById('send-btn').addEventListener('click', sendMessage);
-  composeEl.addEventListener('keydown', e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();} });
-  composeEl.addEventListener('input', ()=>{ composeEl.style.height='auto'; composeEl.style.height=Math.min(composeEl.scrollHeight,120)+'px'; });
+  const sendBtn=document.getElementById('send-btn');
 
-  async function sendMessage() {
-    if (!currentChannel) return;
-    const text=composeEl.value.trim(); if (!text) return;
+  sendBtn.addEventListener('click',sendMsg);
+  composeEl.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();} });
+  composeEl.addEventListener('input',()=>{ composeEl.style.height='auto'; composeEl.style.height=Math.min(composeEl.scrollHeight,140)+'px'; });
+
+  async function sendMsg() {
+    if (!currentChannel) { alert('Not connected yet — please wait a moment and try again.'); return; }
+    const text=composeEl.value.trim();
+    if (!text) return;
     composeEl.value=''; composeEl.style.height='auto';
+
     const wrap=document.getElementById('messages-wrap');
-    const tempMsg={id:'pending',user_name:myName,message:text,created_at:new Date().toISOString(),reaction:null};
-    const tempEl=buildMsgEl(tempMsg); tempEl.style.opacity='0.6'; wrap.appendChild(tempEl); wrap.scrollTop=wrap.scrollHeight;
+    const atBottom=wrap.scrollHeight-wrap.scrollTop-wrap.clientHeight<100;
+
+    // Show message immediately (optimistic)
+    const temp={id:'tmp'+Date.now(),user_name:myName,message:text,created_at:new Date().toISOString(),reaction:null};
+    const tempEl=buildMsg(temp);
+    tempEl.style.opacity='0.55';
+    const ds=fmtDate(temp.created_at);
+    const divs=wrap.querySelectorAll('.date-divider');
+    const last=divs.length?divs[divs.length-1].querySelector('span').textContent:null;
+    if (last!==ds) { const d=document.createElement('div'); d.className='date-divider'; d.innerHTML='<span>'+esc(ds)+'</span>'; wrap.appendChild(d); }
+    wrap.appendChild(tempEl);
+    wrap.scrollTop=wrap.scrollHeight;
+
     try {
-      const { data, error } = await sb.from('messages').insert({channel_id:currentChannel.id,user_name:myName,message:text}).select().single();
+      const {data,error}=await sb.from('messages').insert({channel_id:currentChannel.id,user_name:myName,message:text}).select().single();
       if (error) throw error;
-      lastMsgId=Math.max(lastMsgId, data.id);
-      tempEl.replaceWith(buildMsgEl(data));
+      lastMsgId=Math.max(lastMsgId,data.id);
+      tempEl.replaceWith(buildMsg(data));
       wrap.scrollTop=wrap.scrollHeight;
-      loadChannels();
     } catch(e) {
       tempEl.style.opacity='1';
-      tempEl.querySelector('.msg-text').innerHTML+=` <span style="color:#c62828;font-size:11px">(failed)</span>`;
+      tempEl.querySelector('.msg-text').insertAdjacentHTML('afterend','<div style="color:#c62828;font-size:12px;margin-top:4px">Failed to send. Tap to retry.</div>');
+      tempEl.addEventListener('click',()=>{ composeEl.value=text; tempEl.remove(); });
     }
   }
 
-  // ── REACTIONS — bottom sheet ─────────────────────
-  function showReactionPopup(row, msg) {
-    const overlay = document.createElement('div');
-    overlay.className = 'reaction-sheet-overlay';
-    const current = msg.reaction;
-    const preview = (msg.message||'').split('\n')[0].slice(0,60);
-    overlay.innerHTML = `
-      <div class="reaction-sheet">
-        <div class="reaction-sheet-handle"></div>
-        <div class="reaction-sheet-label">Mark as</div>
-        <div class="reaction-sheet-preview">${escHtml(preview)}${msg.message?.length>60?'…':''}</div>
-        <div class="reaction-sheet-btns">
-          <button class="reaction-btn submitted${current==='submitted'?' active-choice':''}" data-reaction="submitted">✅ Submitted</button>
-          <button class="reaction-btn pending${current==='pending'?' active-choice':''}" data-reaction="pending">⏳ Pending</button>
-        </div>
-        <button class="reaction-cancel">Cancel</button>
-      </div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('.reaction-cancel').addEventListener('click', ()=>overlay.remove());
-    overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
-    overlay.querySelectorAll('.reaction-btn').forEach(btn=>{
-      btn.addEventListener('click', async()=>{
-        overlay.remove();
-        await applyReaction(msg, btn.dataset.reaction, row);
-      });
+  // ── REACTIONS ─────────────────────────────────────
+  function showReactionSheet(msg, row) {
+    const ov=document.createElement('div');
+    ov.className='reaction-sheet-overlay';
+    const cur=msg.reaction;
+    const preview=(msg.message||'').split('\n')[0].slice(0,80);
+    ov.innerHTML=
+      '<div class="reaction-sheet">'+
+        '<div class="reaction-sheet-handle"></div>'+
+        '<div class="reaction-sheet-label">Mark case as</div>'+
+        '<div class="reaction-sheet-preview">'+esc(preview)+(msg.message&&msg.message.length>80?'\u2026':'')+'</div>'+
+        '<div class="reaction-sheet-btns">'+
+          '<button class="reaction-btn submitted'+(cur==='submitted'?' active-choice':'')+'" data-r="submitted">\u2705 Submitted</button>'+
+          '<button class="reaction-btn pending'+(cur==='pending'?' active-choice':'')+'" data-r="pending">\u23F3 Pending</button>'+
+        '</div>'+
+        (cur?'<button class="reaction-cancel" id="clear-r" style="margin-bottom:8px;background:#fdecea;color:#c62828;">\u2715 Remove tag</button>':'')+
+        '<button class="reaction-cancel" id="cancel-r">Cancel</button>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.querySelectorAll('.reaction-btn').forEach(btn=>{
+      btn.addEventListener('click',async()=>{ ov.remove(); await applyReaction(msg,btn.dataset.r,row); });
     });
+    const clr=ov.querySelector('#clear-r');
+    if (clr) clr.addEventListener('click',async()=>{ ov.remove(); await applyReaction(msg,null,row); });
+    ov.querySelector('#cancel-r').addEventListener('click',()=>ov.remove());
+    ov.addEventListener('click',e=>{ if(e.target===ov) ov.remove(); });
   }
-  async function applyReaction(msg, reactionKey, row) {
-    const newReaction = msg.reaction===reactionKey ? null : reactionKey;
+
+  async function applyReaction(msg, reaction, row) {
     try {
-      const { error } = await sb.from('messages').update({reaction:newReaction}).eq('id', msg.id);
+      const {error}=await sb.from('messages').update({reaction:reaction}).eq('id',msg.id);
       if (error) throw error;
-      msg.reaction=newReaction;
-      row.replaceWith(buildMsgEl(msg));
+      msg.reaction=reaction;
+      row.replaceWith(buildMsg(msg));
     } catch(e) { alert('Could not save: '+e.message); }
   }
 
-  // ── EXPORT PDF ───────────────────────────────────
-  document.getElementById('export-btn').addEventListener('click', showExportModal);
-  function showExportModal() {
+  // ── EXPORT PDF ────────────────────────────────────
+  document.getElementById('export-btn').addEventListener('click',()=>{
     if (!currentChannel) return;
-    const overlay=document.createElement('div'); overlay.className='modal-overlay';
-    overlay.innerHTML=`<div class="modal-card"><div class="modal-header"><span class="modal-title">Download chat history</span><button class="modal-close" id="modal-close-btn">×</button></div><div class="modal-body"><div class="modal-label">Select a time range:</div><div class="range-options"><div class="range-option" data-days="7"><span class="range-icon">📅</span>Last 1 week</div><div class="range-option" data-days="30"><span class="range-icon">🗓️</span>Last 30 days</div><div class="range-option" data-days="180"><span class="range-icon">📆</span>Last 6 months</div><div class="range-option" data-days="365"><span class="range-icon">🗂️</span>Last 1 year</div><div class="range-option" data-days="0"><span class="range-icon">📋</span>All history</div></div><button class="export-dl-btn" id="export-dl-btn" disabled>Select a range above</button></div></div>`;
-    document.body.appendChild(overlay);
-    let selectedDays=null;
-    overlay.querySelectorAll('.range-option').forEach(el=>{
+    const ov=document.createElement('div'); ov.className='modal-overlay';
+    ov.innerHTML=
+      '<div class="modal-card">'+
+        '<div class="modal-header"><span class="modal-title">Download history</span><button class="modal-close" id="mc">&#215;</button></div>'+
+        '<div class="modal-body">'+
+          '<div class="modal-label">Select time range:</div>'+
+          '<div class="range-options">'+
+            '<div class="range-option" data-days="7"><span class="range-icon">&#128197;</span>Last 1 week</div>'+
+            '<div class="range-option" data-days="30"><span class="range-icon">&#128199;</span>Last 30 days</div>'+
+            '<div class="range-option" data-days="180"><span class="range-icon">&#128198;</span>Last 6 months</div>'+
+            '<div class="range-option" data-days="365"><span class="range-icon">&#128194;</span>Last 1 year</div>'+
+            '<div class="range-option" data-days="0"><span class="range-icon">&#128203;</span>All history</div>'+
+          '</div>'+
+          '<button class="export-dl-btn" id="edl" disabled>Select a range above</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    let days=null;
+    ov.querySelectorAll('.range-option').forEach(el=>{
       el.addEventListener('click',()=>{
-        overlay.querySelectorAll('.range-option').forEach(o=>o.classList.remove('selected'));
-        el.classList.add('selected'); selectedDays=parseInt(el.dataset.days);
-        const dlBtn=document.getElementById('export-dl-btn'); dlBtn.disabled=false;
-        dlBtn.textContent='Download PDF — '+el.textContent.trim();
+        ov.querySelectorAll('.range-option').forEach(o=>o.classList.remove('selected'));
+        el.classList.add('selected'); days=parseInt(el.dataset.days);
+        const b=document.getElementById('edl'); b.disabled=false; b.textContent='Download PDF';
       });
     });
-    document.getElementById('modal-close-btn').addEventListener('click',()=>overlay.remove());
-    overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove();});
-    document.getElementById('export-dl-btn').addEventListener('click', async()=>{
-      if(selectedDays===null)return;
-      const dlBtn=document.getElementById('export-dl-btn'); dlBtn.disabled=true;
-      dlBtn.innerHTML='<div class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;margin-right:6px;"></div>Preparing PDF...';
-      await exportPDF(selectedDays); overlay.remove();
+    document.getElementById('mc').addEventListener('click',()=>ov.remove());
+    ov.addEventListener('click',e=>{ if(e.target===ov) ov.remove(); });
+    document.getElementById('edl').addEventListener('click',async()=>{
+      if (days===null) return;
+      const b=document.getElementById('edl'); b.disabled=true; b.textContent='Preparing...';
+      await exportPDF(days); ov.remove();
     });
-  }
+  });
 
   async function exportPDF(days) {
-    const exportBtn=document.getElementById('export-btn'); exportBtn.disabled=true;
     try {
-      let query = sb.from('messages').select('*').eq('channel_id', currentChannel.id).order('created_at', {ascending:true});
-      if (days > 0) {
-        const fromDate = new Date(Date.now() - days*24*60*60*1000).toISOString();
-        query = query.gte('created_at', fromDate);
-      }
-      const { data: msgs } = await query;
-      if (!msgs?.length) { alert('No messages in this range.'); return; }
-
-      const LOGO_B64 = document.querySelector('img[alt="Clifton OB/GYN"]')?.src || '';
+      let q=sb.from('messages').select('*').eq('channel_id',currentChannel.id).order('created_at',{ascending:true});
+      if (days>0) q=q.gte('created_at',new Date(Date.now()-days*86400000).toISOString());
+      const {data:msgs}=await q;
+      if (!msgs||!msgs.length) { alert('No messages in this range.'); return; }
       const {jsPDF}=window.jspdf;
       const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
-      const pageW=doc.internal.pageSize.getWidth(), pageH=doc.internal.pageSize.getHeight();
-      const margin=16, contentW=pageW-margin*2;
+      const pW=doc.internal.pageSize.getWidth(), pH=doc.internal.pageSize.getHeight(), m=16, cW=pW-m*2;
       let y=0;
-      function addHeader(isFirst) {
-        doc.setFillColor(245,237,228); doc.rect(0,0,pageW,isFirst?52:18,'F');
-        if (isFirst) {
-          try { doc.addImage(LOGO_B64,'PNG',(pageW-80)/2,6,80,22); } catch(e){}
-          doc.setDrawColor(180,120,60); doc.setLineWidth(0.3); doc.line(margin,31,pageW-margin,31);
-          doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(100,50,10);
-          doc.text(currentChannel.name, pageW/2, 38, {align:'center'});
-          doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140,90,40);
-          const rangeLabel=days===0?'All history':days===7?'Last 7 days':days===30?'Last 30 days':days===180?'Last 6 months':'Last year';
-          doc.text(`${rangeLabel}  ·  ${msgs.length} messages  ·  Exported ${new Date().toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'})}`, pageW/2, 44, {align:'center'});
-          y=58;
+      const addHdr=first=>{
+        doc.setFillColor(245,237,228); doc.rect(0,0,pW,first?52:18,'F');
+        if (first) {
+          doc.setDrawColor(180,120,60); doc.setLineWidth(0.3); doc.line(m,31,pW-m,31);
+          doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(100,50,10);
+          doc.text('Clifton OBGYN Procedures',pW/2,38,{align:'center'});
+          doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(140,90,40);
+          const rl=days===0?'All history':days===7?'Last 7 days':days===30?'Last 30 days':days===180?'Last 6 months':'Last year';
+          doc.text(rl+' \u00b7 '+msgs.length+' messages \u00b7 Exported '+new Date().toLocaleDateString(),pW/2,46,{align:'center'});
+          y=56;
         } else {
-          try { doc.addImage(LOGO_B64,'PNG',margin,3,36,10); } catch(e){}
-          doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140,90,40);
-          doc.text(currentChannel.name, pageW-margin, 10, {align:'right'}); y=22;
+          doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(140,90,40);
+          doc.text('Clifton OBGYN Procedures',pW-m,14,{align:'right'}); y=22;
         }
-      }
-      addHeader(true);
-      let lastDate=null, isFirstPage=true;
+      };
+      addHdr(true);
+      let lastDate=null;
       msgs.forEach(msg=>{
-        const senderName=msg.user_name;
-        const msgText=msg.message||'';
-        if(!msgText.trim())return;
-        const timeStr=new Date(msg.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-        const dateStr=new Date(msg.created_at).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-        if(dateStr!==lastDate){
-          y+=5; if(y>pageH-32){doc.addPage();isFirstPage=false;addHeader(false);}
+        const txt=msg.message||''; if(!txt.trim()) return;
+        const ts=new Date(msg.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+        const ds=new Date(msg.created_at).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+        if (ds!==lastDate) {
+          y+=5; if(y>pH-32){doc.addPage();addHdr(false);}
           doc.setFillColor(232,220,205);
-          const dtW=doc.getStringUnitWidth(dateStr)*8/doc.internal.scaleFactor+8;
-          doc.roundedRect((pageW-dtW)/2,y-4,dtW,8,2,2,'F');
-          doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(100,60,20);
-          doc.text(dateStr,pageW/2,y+0.5,{align:'center'}); y+=8; lastDate=dateStr;
+          const dw=doc.getStringUnitWidth(ds)*8/doc.internal.scaleFactor+8;
+          doc.roundedRect((pW-dw)/2,y-4,dw,8,2,2,'F');
+          doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(100,60,20);
+          doc.text(ds,pW/2,y+0.5,{align:'center'}); y+=9; lastDate=ds;
         }
-        const maxW=contentW-24;
-        doc.setFont('helvetica','normal'); doc.setFontSize(9);
-        const lines=doc.splitTextToSize(msgText,maxW);
-        const rowH=lines.length*5.2+10;
-        if(y+rowH>pageH-18){doc.addPage();isFirstPage=false;addHeader(false);}
-        doc.setFillColor(252,249,245); doc.roundedRect(margin,y-1,contentW,rowH,2,2,'F');
-        doc.setDrawColor(225,210,190); doc.setLineWidth(0.2); doc.roundedRect(margin,y-1,contentW,rowH,2,2,'S');
-        doc.setFillColor(139,69,19); doc.rect(margin,y-1,2.5,rowH,'F');
-        doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(100,50,10);
-        doc.text(senderName,margin+6,y+4.5);
-        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(170,130,90);
-        doc.text(timeStr,pageW-margin-2,y+4.5,{align:'right'});
-        doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,30,20);
-        doc.text(lines,margin+6,y+10,{maxWidth:maxW});
+        const mxW=cW-20; doc.setFont('helvetica','normal'); doc.setFontSize(10);
+        const lines=doc.splitTextToSize(txt,mxW);
+        const rH=lines.length*5.5+10;
+        if(y+rH>pH-18){doc.addPage();addHdr(false);}
+        doc.setFillColor(252,249,245); doc.roundedRect(m,y-1,cW,rH,2,2,'F');
+        doc.setDrawColor(225,210,190); doc.setLineWidth(0.2); doc.roundedRect(m,y-1,cW,rH,2,2,'S');
+        doc.setFillColor(139,69,19); doc.rect(m,y-1,3,rH,'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(100,50,10);
+        doc.text(msg.user_name,m+7,y+5);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,120,80);
+        doc.text(ts,pW-m-2,y+5,{align:'right'});
+        doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(40,30,20);
+        doc.text(lines,m+7,y+11,{maxWidth:mxW});
         if(msg.reaction){
-          const tag=msg.reaction==='submitted'?'✓ Submitted':'⏳ Pending';
-          doc.setFontSize(7); doc.setTextColor(msg.reaction==='submitted'?46:180,msg.reaction==='submitted'?125:100,msg.reaction==='submitted'?50:0);
-          doc.text(tag,margin+6,y+rowH-2);
+          doc.setFontSize(8); doc.setTextColor(msg.reaction==='submitted'?46:180,msg.reaction==='submitted'?125:100,50);
+          doc.text(msg.reaction==='submitted'?'Submitted':'Pending',m+7,y+rH-2);
         }
-        y+=rowH+3;
+        y+=rH+3;
       });
-      const totalPages=doc.internal.getNumberOfPages();
-      for(let i=1;i<=totalPages;i++){
-        doc.setPage(i); doc.setFillColor(245,237,228); doc.rect(0,pageH-12,pageW,12,'F');
-        doc.setDrawColor(200,170,130); doc.setLineWidth(0.2); doc.line(margin,pageH-12,pageW-margin,pageH-12);
+      const tp=doc.internal.getNumberOfPages();
+      for(let i=1;i<=tp;i++){
+        doc.setPage(i); doc.setFillColor(245,237,228); doc.rect(0,pH-12,pW,12,'F');
         doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(140,90,40);
-        doc.text('Clifton OB/GYN  ·  Confidential Clinical Record  ·  Superior Care for Women in Northern and Central New Jersey',pageW/2,pageH-6,{align:'center'});
-        doc.text(`Page ${i} of ${totalPages}`,pageW-margin,pageH-6,{align:'right'});
+        doc.text('Clifton OB/GYN \u00b7 Confidential Clinical Record',pW/2,pH-6,{align:'center'});
+        doc.text('Page '+i+' of '+tp,pW-m,pH-6,{align:'right'});
       }
-      const filename=`Clifton_OBGYN_${currentChannel.name.replace(/[^a-z0-9]/gi,'_')}_${new Date().toISOString().slice(0,10)}.pdf`;
-      doc.save(filename);
+      doc.save('CliftonOBGYN_'+new Date().toISOString().slice(0,10)+'.pdf');
     } catch(e) { alert('Export failed: '+e.message); }
-    exportBtn.disabled=false;
-    exportBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none"><path d="M12 16l-4-4h2.5V4h3v8H16l-4 4z" fill="#fff"/><path d="M4 18h16v2H4v-2z" fill="#fff"/></svg>';
   }
 
+  document.getElementById('logout-btn').addEventListener('click',()=>{
+    if (confirm('Sign out?')) { clearInterval(pollTimer); location.reload(); }
+  });
 
+  // ── START ─────────────────────────────────────────
+  loadUserPicker();
 
 })();
 </script>
 </body>
 </html>
-
