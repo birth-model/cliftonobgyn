@@ -115,6 +115,7 @@
   .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
   .spinner.dark { border-color: rgba(0,0,0,0.1); border-top-color: var(--green); }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
 
   /* ── APP — full screen chat ─────────────── */
   #app {
@@ -454,12 +455,9 @@
       '<div class="user-avatar">'+av(u.name)+'</div>' +
       '<div class="user-details"><div class="user-name">'+esc(u.name)+'</div></div>' +
       '<div class="user-check"></div></div>'
-    ).join('') +
-    '<div class="user-option add-user-row" id="add-user-row" style="border-style:dashed;justify-content:center;gap:10px;color:#667781">' +
-    '<span style="font-size:22px;line-height:1">+</span>' +
-    '<span style="font-size:15px;font-weight:500">Add a user</span></div>';
+    ).join('');
 
-    list.querySelectorAll('.user-option:not(.add-user-row)').forEach(el => {
+    list.querySelectorAll('.user-option').forEach(el => {
       el.addEventListener('click', () => {
         list.querySelectorAll('.user-option').forEach(o=>o.classList.remove('selected'));
         el.classList.add('selected');
@@ -468,7 +466,7 @@
         btn.textContent='Sign in as '+el.dataset.name;
       });
     });
-    document.getElementById('add-user-row').addEventListener('click', showAddUserSheet);
+
   }
 
   function showAddUserSheet() {
@@ -485,10 +483,16 @@
           '<input id="au-name" type="text" placeholder="e.g. Jane Smith" autocomplete="off" ' +
             'style="width:100%;height:52px;padding:0 16px;border:1.5px solid #e9edef;border-radius:12px;' +
             'font-size:17px;margin-bottom:14px;outline:none;-webkit-appearance:none;" />' +
-          '<div class="modal-label">Role (optional)</div>' +
-          '<input id="au-role" type="text" placeholder="Physician" autocomplete="off" ' +
-            'style="width:100%;height:52px;padding:0 16px;border:1.5px solid #e9edef;border-radius:12px;' +
-            'font-size:17px;margin-bottom:18px;outline:none;-webkit-appearance:none;" />' +
+          '<div class="modal-label">Role</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;" id="role-chips">' +
+            '<button type="button" class="role-chip" data-role="Physician" style="padding:8px 16px;border-radius:20px;border:1.5px solid #e9edef;background:#f8f8f8;font-size:14px;cursor:pointer;">Physician</button>' +
+            '<button type="button" class="role-chip" data-role="Clinician" style="padding:8px 16px;border-radius:20px;border:1.5px solid #e9edef;background:#f8f8f8;font-size:14px;cursor:pointer;">Clinician</button>' +
+            '<button type="button" class="role-chip" data-role="Administrator" style="padding:8px 16px;border-radius:20px;border:1.5px solid #e9edef;background:#f8f8f8;font-size:14px;cursor:pointer;">Administrator</button>' +
+            '<button type="button" class="role-chip" data-role="Billing" style="padding:8px 16px;border-radius:20px;border:1.5px solid #e9edef;background:#f8f8f8;font-size:14px;cursor:pointer;">Billing</button>' +
+          '</div>' +
+          '<input id="au-role" type="text" placeholder="Or type a custom role..." autocomplete="off" ' +
+            'style="width:100%;height:48px;padding:0 16px;border:1.5px solid #e9edef;border-radius:12px;' +
+            'font-size:16px;margin-bottom:18px;outline:none;-webkit-appearance:none;" />' +
           '<button id="au-save" class="export-dl-btn" style="font-size:17px;height:52px;">Add User</button>' +
           '<div id="au-err" style="color:#c62828;font-size:13px;margin-top:10px;text-align:center;display:none"></div>' +
         '</div>' +
@@ -497,6 +501,17 @@
     document.getElementById('au-close').addEventListener('click',()=>ov.remove());
     ov.addEventListener('click',e=>{if(e.target===ov)ov.remove();});
     setTimeout(()=>document.getElementById('au-name').focus(), 100);
+
+    // Role chip selection
+    ov.querySelectorAll('.role-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        ov.querySelectorAll('.role-chip').forEach(c => {
+          c.style.background='#f8f8f8'; c.style.borderColor='#e9edef'; c.style.color='#333';
+        });
+        chip.style.background='#075E54'; chip.style.borderColor='#075E54'; chip.style.color='#fff';
+        document.getElementById('au-role').value = chip.dataset.role;
+      });
+    });
 
     document.getElementById('au-save').addEventListener('click', async () => {
       const name=document.getElementById('au-name').value.trim();
@@ -625,12 +640,43 @@
       const {data,error}=await sb.from('channels').select('*').eq('name','Clifton OBGYN Procedures').single();
       if (error) throw error;
       currentChannel=data;
-      await loadMessages(data.id);
-      pollTimer=setInterval(()=>pollNew(data.id),3000);
+      // Show skeleton immediately, load in background
+      showSkeleton();
+      loadMessages(data.id).then(()=>{
+        pollTimer=setInterval(()=>pollNew(data.id),3000);
+      });
     } catch(e) {
       document.getElementById('messages-wrap').innerHTML=
         '<div style="padding:24px;color:#c62828;text-align:center;font-size:16px">Could not load chat.<br><small>'+esc(e.message)+'</small></div>';
     }
+  }
+
+  // ── SKELETON ──────────────────────────────────────
+  function showSkeleton() {
+    const wrap=document.getElementById('messages-wrap');
+    const shimmer='background:linear-gradient(90deg,#e8e0d8 25%,#f5f0eb 50%,#e8e0d8 75%);background-size:200% 100%;animation:shimmer 1.2s infinite;border-radius:8px;';
+    wrap.innerHTML = [
+      // Simulate a mix of in/out messages as placeholders
+      {out:false, w:'72%', lines:3},
+      {out:true,  w:'58%', lines:2},
+      {out:false, w:'65%', lines:4},
+      {out:true,  w:'45%', lines:2},
+      {out:false, w:'70%', lines:3},
+      {out:true,  w:'60%', lines:2},
+      {out:false, w:'55%', lines:1},
+      {out:true,  w:'68%', lines:3},
+    ].map(({out,w,lines})=>
+      '<div class="msg-row '+(out?'out':'in')+'" style="margin-bottom:8px">'+
+        '<div style="max-width:'+w+';padding:10px 13px;border-radius:10px;background:'+(out?'#d8f0c8':'#fff')+';box-shadow:0 1px 2px rgba(0,0,0,0.08)">'+
+          (!out?'<div style="width:80px;height:11px;margin-bottom:6px;'+shimmer+'"></div>':'')+
+          Array.from({length:lines},(_,i)=>
+            '<div style="height:14px;margin-bottom:'+(i<lines-1?5:0)+'px;width:'+(i===lines-1?'60%':'95%')+';'+shimmer+'"></div>'
+          ).join('')+
+          '<div style="height:10px;width:35px;margin-top:5px;margin-left:auto;'+shimmer+'"></div>'+
+        '</div>'+
+      '</div>'
+    ).join('') +
+    '<div id="skeleton-date" style="text-align:center;padding:4px 0 8px"><span style="display:inline-block;width:80px;height:20px;border-radius:10px;'+shimmer+'"></span></div>';
   }
 
   // ── LOAD MESSAGES ─────────────────────────────────
@@ -922,6 +968,8 @@
       doc.save('CliftonOBGYN_'+new Date().toISOString().slice(0,10)+'.pdf');
     } catch(e) { alert('Export failed: '+e.message); }
   }
+
+  document.getElementById('add-user-btn').addEventListener('click', showAddUserSheet);
 
   document.getElementById('logout-btn').addEventListener('click',()=>{
     if (confirm('Sign out?')) { clearInterval(pollTimer); location.reload(); }
