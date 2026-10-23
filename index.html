@@ -427,9 +427,9 @@
   };
 
   // ── PIN (Supabase) ────────────────────────────────
-  const getPin    = async uid => { const {data}=await sb.from('user_pins').select('pin_hash').eq('user_id',uid).single(); return data?.pin_hash||null; };
-  const savePin   = async (uid,pin) => sb.from('user_pins').upsert({user_id:uid,pin_hash:pin},{onConflict:'user_id'});
-  const deletePin = async uid => sb.from('user_pins').delete().eq('user_id',uid);
+  const hasPin    = async uid => { const {data}=await sb.rpc('pin_status',{p_user_id:uid}); return !!data; };
+  const createPin = async (uid,pin) => { const {data}=await sb.rpc('pin_create',{p_user_id:uid,p_pin:pin}); return !!data; };
+  const checkPin  = async (uid,pin) => { const {data,error}=await sb.rpc('pin_login',{p_user_id:uid,p_pin:pin}); return error?'wrong':data; };
 
   // ── USERS ─────────────────────────────────────────
   async function loadUserPicker() {
@@ -552,8 +552,7 @@
     document.getElementById('login-screen').style.display='none';
     document.getElementById('pin-screen').style.display='flex';
     document.getElementById('pin-prompt').innerHTML='<div class="spinner dark" style="margin:auto"></div>';
-    const stored=await getPin(userId);
-    pinMode=stored?'enter':'create';
+    pinMode=(await hasPin(userId))?'enter':'create';
     updatePinPrompt(); updatePinDots();
   }
 
@@ -581,12 +580,16 @@
       pinFirstEntry=pinBuffer; pinBuffer=''; pinMode='confirm'; updatePinPrompt(); updatePinDots();
     } else if (pinMode==='confirm') {
       if (pinBuffer!==pinFirstEntry) { pinError("PINs don't match"); pinMode='create'; pinFirstEntry=''; setTimeout(updatePinPrompt,800); }
-      else { document.getElementById('pin-prompt').textContent='Saving...'; await savePin(pinUserId,pinBuffer); connect(pinUserId); }
+      else {
+        document.getElementById('pin-prompt').textContent='Saving...';
+        if (await createPin(pinUserId,pinBuffer)) connect(pinUserId);
+        else { pinMode='enter'; updatePinPrompt(); pinError('Could not save PIN'); }
+      }
     } else {
       document.getElementById('pin-prompt').textContent='Checking...';
-      const stored=await getPin(pinUserId);
-      if (pinBuffer===stored) connect(pinUserId);
-      else { updatePinPrompt(); pinError('Incorrect PIN'); }
+      const result=await checkPin(pinUserId,pinBuffer);
+      if (result==='ok') connect(pinUserId);
+      else { updatePinPrompt(); pinError(result==='locked'?'Too many attempts. Try again later.':'Incorrect PIN'); }
     }
   }
 
@@ -607,14 +610,8 @@
     pinBuffer=''; pinFirstEntry='';
   });
 
-  document.getElementById('forgot-pin-btn').addEventListener('click',async()=>{
-    const name=USERS.find(u=>u.id===pinUserId)?.name||pinUserId;
-    if (confirm('Reset PIN for '+name+'? They will create a new one on next login.')) {
-      await deletePin(pinUserId);
-      pinBuffer=''; pinFirstEntry=''; pinMode='create';
-      document.getElementById('pin-error').textContent='';
-      updatePinPrompt(); updatePinDots();
-    }
+  document.getElementById('forgot-pin-btn').addEventListener('click',()=>{
+    alert('To reset your PIN, contact Birth Model support.');
   });
 
   // ── CONNECT ───────────────────────────────────────
@@ -972,11 +969,21 @@
   document.getElementById('add-user-btn').addEventListener('click', showAddUserSheet);
 
   document.getElementById('logout-btn').addEventListener('click',()=>{
-    if (confirm('Sign out?')) { clearInterval(pollTimer); location.reload(); }
+    if (confirm('Sign out?')) { clearInterval(pollTimer); sb.rpc('pin_logout').then(()=>location.reload()); }
   });
 
   // ── START ─────────────────────────────────────────
-  loadUserPicker();
+  // every page load gets a session with no user bound until a PIN is entered
+  (async () => {
+    const {data:{session}}=await sb.auth.getSession();
+    let {error}=session?await sb.rpc('pin_logout'):{error:true};
+    if (error) ({error}=await sb.auth.signInAnonymously());
+    if (error) {
+      document.getElementById('user-list').innerHTML='<div style="text-align:center;padding:16px;color:#c62828;font-size:14px">Could not connect: '+esc(error.message)+'</div>';
+      return;
+    }
+    loadUserPicker();
+  })();
 
 })();
 </script>
